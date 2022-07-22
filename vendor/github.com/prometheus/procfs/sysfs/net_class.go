@@ -11,6 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build linux
 // +build linux
 
 package sysfs
@@ -105,7 +106,8 @@ func (fs FS) NetClass() (NetClass, error) {
 	path := fs.sys.Path(netclassPath)
 	netClass := NetClass{}
 	for _, devicePath := range devices {
-		interfaceClass, err := parseNetClassIface(filepath.Join(path, devicePath))
+		// interfaceClass, err := parseNetClassIface(filepath.Join(path, devicePath))
+		interfaceClass, err := parseNetClassIfaceUseCache(filepath.Join(path, devicePath))
 		if err != nil {
 			return nil, err
 		}
@@ -114,6 +116,94 @@ func (fs FS) NetClass() (NetClass, error) {
 	}
 
 	return netClass, nil
+}
+
+func parseValueFromFIle(filename string) (*util.ValueParser, error) {
+
+	value, err := util.SysReadFile(filename)
+	if err != nil {
+		if os.IsNotExist(err) || os.IsPermission(err) || err.Error() == "operation not supported" || err.Error() == "invalid argument" {
+			return nil, fmt.Errorf("skip")
+		}
+		return nil, fmt.Errorf("failed to read file %q: %w", filename, err)
+	}
+	vp := util.NewValueParser(value)
+	return vp, nil
+}
+
+var cacheNIC = NetClass{}
+
+func parseNetClassIfaceUseCache(devicePath string) (*NetClassIface, error) {
+	interfaceClass, cacheHit := cacheNIC[devicePath]
+	if !cacheHit {
+		interfaceClass, err := parseNetClassIface(devicePath)
+		if err != nil {
+			return nil, err
+		}
+		cacheNIC[devicePath] = *interfaceClass
+		return interfaceClass, nil
+	}
+
+	files, err := ioutil.ReadDir(devicePath)
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range files {
+		if !f.Mode().IsRegular() {
+			continue
+		}
+		name := filepath.Join(devicePath, f.Name())
+
+		switch f.Name() {
+		case "carrier":
+			vp, err := parseValueFromFIle(name)
+			if err != nil {
+				if err.Error() == "skip" {
+					continue
+				}
+				return nil, err
+			}
+			interfaceClass.Carrier = vp.PInt64()
+		case "carrier_changes":
+			vp, err := parseValueFromFIle(name)
+			if err != nil {
+				if err.Error() == "skip" {
+					continue
+				}
+				return nil, err
+			}
+			interfaceClass.CarrierChanges = vp.PInt64()
+		case "carrier_up_count":
+			vp, err := parseValueFromFIle(name)
+			if err != nil {
+				if err.Error() == "skip" {
+					continue
+				}
+				return nil, err
+			}
+			interfaceClass.CarrierUpCount = vp.PInt64()
+		case "carrier_down_count":
+			vp, err := parseValueFromFIle(name)
+			if err != nil {
+				if err.Error() == "skip" {
+					continue
+				}
+				return nil, err
+			}
+			interfaceClass.CarrierDownCount = vp.PInt64()
+		case "dev_id":
+			vp, err := parseValueFromFIle(name)
+			if err != nil {
+				if err.Error() == "skip" {
+					continue
+				}
+				return nil, err
+			}
+			interfaceClass.DevID = vp.PInt64()
+		}
+	}
+
+	return &interfaceClass, nil
 }
 
 // parseNetClassIface scans predefined files in /sys/class/net/<iface>
